@@ -24,12 +24,29 @@ func (rcv LineNumberSlice) Any(fn func(LineNumber) bool) bool {
 	return false
 }
 
+type Change struct {
+	Type diffparser.DiffLineMode
+	Text string
+}
+
+func (c *Change) Added() bool {
+	return c.Type == diffparser.ADDED
+}
+
+func (c *Change) Removal() bool {
+	return c.Type == diffparser.REMOVED
+}
+
+func (c *Change) Unchanged() bool {
+	return c.Type == diffparser.UNCHANGED
+}
+
 // +gen slice:"First"
 type ModifiedFile struct {
 	OldName string
 	CurrentName string
 	LineNumbers LineNumberSlice
-	Changes []string
+	Changes []Change
 }
 
 func ReadDiff(reader io.Reader) ([]ModifiedFile,error) {
@@ -51,7 +68,10 @@ func ReadDiff(reader io.Reader) ([]ModifiedFile,error) {
 					continue
 				}
 				changedFile.LineNumbers = append(changedFile.LineNumbers, LineNumber(line.Number))
-				changedFile.Changes = append(changedFile.Changes, line.Content)
+				changedFile.Changes = append(changedFile.Changes, Change{
+					Type: line.Mode,
+					Text: line.Content,
+				})
 			}
 		}
 
