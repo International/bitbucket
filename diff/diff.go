@@ -29,6 +29,7 @@ type ModifiedFile struct {
 	OldName string
 	CurrentName string
 	LineNumbers LineNumberSlice
+	Changes []string
 }
 
 func ReadDiff(reader io.Reader) ([]ModifiedFile,error) {
@@ -50,6 +51,7 @@ func ReadDiff(reader io.Reader) ([]ModifiedFile,error) {
 					continue
 				}
 				changedFile.LineNumbers = append(changedFile.LineNumbers, LineNumber(line.Number))
+				changedFile.Changes = append(changedFile.Changes, line.Content)
 			}
 		}
 
