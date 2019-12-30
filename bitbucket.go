@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/International/bitbucket/diff"
 	"github.com/pkg/errors"
+	"golang.org/x/xerrors"
 	"io"
 	"io/ioutil"
 	"log"
@@ -20,63 +21,6 @@ type queuedDownload struct {
 	Name          string
 	RelevantForPR bool
 }
-
-//func (p *PullRequestSource) Input(input InputSource) ([]code.TempStoredFile, error) {
-//	if input.Kind != PullRequest {
-//		return nil, errors.New("can only work with bitbucket pull requests")
-//	}
-//	pullRequestId := input.Value
-//	log.Println("computing diff")
-//	filesModified, err := p.Client.PullRequestDiff(pullRequestId)
-//	filesModifiedSlice := p.filterInputs(diff.ModifiedFileSlice(filesModified))
-//
-//	description, err := p.Client.PullRequestInfo(pullRequestId)
-//	if err != nil {
-//		return nil, errors.Wrap(err, "failed to obtain pull request info")
-//	}
-//
-//	branchWithChanges := description.Commit
-//	fileNames := make([]queuedDownload, len(filesModifiedSlice), len(filesModifiedSlice))
-//	for idx, modifiedFile := range filesModifiedSlice {
-//		fileNames[idx] = queuedDownload{modifiedFile.CurrentName, true}
-//	}
-//
-//	if p.Config.HasOwnToolConfig {
-//		fileNames = append(fileNames, queuedDownload{p.Config.ToolConfigName, false})
-//	}
-//
-//	fileContents, err := p.Client.MultipleFilesFromBranch(branchWithChanges, fileNames)
-//
-//	if err != nil {
-//		return nil, errors.Wrap(err, fmt.Sprintf("failed to download files"))
-//	}
-//
-//	files := make([]code.TempStoredFile, 0, len(fileContents))
-//	for queuedToBeDownloaded, contents := range fileContents {
-//		if !queuedToBeDownloaded.RelevantForPR {
-//			files = append(files, code.TempStoredFile{
-//				OriginalName: queuedToBeDownloaded.Name, Contents: contents,
-//				State: code.ToolConfigFile,
-//			})
-//			continue
-//		}
-//		matchingDiff, err := filesModifiedSlice.First(func(file diff.ModifiedFile) bool {
-//			return file.CurrentName == queuedToBeDownloaded.Name
-//		})
-//
-//		if err != nil {
-//			return nil, errors.Wrap(err, fmt.Sprintf("could not find matching diff for file %s", queuedToBeDownloaded.Name))
-//		}
-//
-//		files = append(files, code.TempStoredFile{
-//			OriginalName: queuedToBeDownloaded.Name, Contents: contents,
-//			State: code.NotWritten, Modifications: matchingDiff,
-//		})
-//	}
-//
-//	return files, nil
-//
-//}
 
 func DefaultHttpClient() *http.Client {
 	cli := &http.Client{Timeout: 30 * time.Second}
@@ -212,6 +156,17 @@ func (b *BitBucketClient) prepareAuthenticatedRequest(method, url string, conten
 	}
 
 	return request, nil
+}
+
+func (b *BitBucketClient) CommitDiff(spec, target string) ([]byte, error) {
+	diffURL := b.formURL(fmt.Sprintf("repositories/%s/%s/diff/%s..%s", b.RepoOwner, b.Repo, spec, target))
+	response, err := b.performGet(diffURL)
+
+	if err != nil {
+		return nil, xerrors.Errorf("CommitDiff: %w", err)
+	}
+
+	return response, nil
 }
 
 func (b *BitBucketClient) MultipleFilesFromBranch(branch string, files []queuedDownload) (map[queuedDownload][]byte, error) {
