@@ -121,7 +121,7 @@ type BitBucketClient struct {
 	Logger    *log.Logger
 }
 
-func newClient(repoOwner, repo, userName, password string) *BitBucketClient {
+func NewClient(repoOwner, repo, userName, password string) *BitBucketClient {
 
 	httpCli := DefaultHttpClient()
 
