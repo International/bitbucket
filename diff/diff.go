@@ -2,6 +2,7 @@ package diff
 
 import (
 	"github.com/International/diffparser"
+	"golang.org/x/xerrors"
 	"io"
 	"io/ioutil"
 )
@@ -33,11 +34,11 @@ type ModifiedFile struct {
 func ReadDiff(reader io.Reader) ([]ModifiedFile,error) {
 	contents, err := ioutil.ReadAll(reader)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to read diff contents")
+		return nil, xerrors.Errorf("failed to read diff contents: %w", err)
 	}
 	diff, err := diffparser.Parse(string(contents))
 	if err != nil {
-		return nil, errors.Wrap(err, "could not parse diff")
+		return nil, xerrors.Errorf("could not parse diff: %w", err)
 	}
 	modifiedFiles := make([]ModifiedFile, 0, len(diff.Files))
 	for _, file := range diff.Files {
