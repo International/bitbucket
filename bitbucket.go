@@ -17,6 +17,11 @@ import (
 	"time"
 )
 
+var alreadyRequestedCodeChanges = errors.New("already requested code changes")
+var noCodeChangesRequested = errors.New("no code changes requested")
+var notApprovedYet = errors.New("PR not approved yet")
+var alreadyApproved = errors.New("PR already approved")
+
 type queuedDownload struct {
 	Name          string
 	RelevantForPR bool
@@ -65,6 +70,44 @@ type BitBucketClient struct {
 	Logger    *log.Logger
 }
 
+func buildInlineMsgFormat(text,path string, line int) map[string]interface{} {
+	return map[string]interface{}{
+		"content": map[string]string{
+			"raw": text,
+		},
+		"inline": map[string]interface{}{
+			"to":   line,
+			"path": path,
+		},
+	}
+
+}
+
+func buildGlobalMsgFormat(text string) map[string]interface{} {
+	return map[string]interface{}{
+		"content": map[string]string{
+			"raw": text,
+		},
+	}
+
+}
+
+func IsAlreadyApproved(err error) bool {
+	return err == alreadyApproved
+}
+
+func IsAlreadyNotApproved(err error) bool {
+	return err == notApprovedYet
+}
+
+func IsCodeChangesAlreadyRequested(err error) bool {
+	return err == alreadyRequestedCodeChanges
+}
+
+func IsNoChangesRequested(err error) bool {
+	return err == noCodeChangesRequested
+}
+
 func NewClient(repoOwner, repo, userName, password string) *BitBucketClient {
 
 	httpCli := DefaultHttpClient()
@@ -86,6 +129,18 @@ type Comment struct {
 	Line diff.LineNumber
 }
 
+func (c *Comment) toMapFields() map[string]interface{} {
+	return map[string]interface{}{
+		"content": map[string]string{
+			"raw": c.Text,
+		},
+		"inline": map[string]interface{}{
+			"to":   c.Line,
+			"path": c.File,
+		},
+	}
+}
+
 func ParseRepoInfo(pullRequestURL string) (string, string, string, error) {
 	re := regexp.MustCompile(`bitbucket.org/([^/]+)/([^/]+)/pull-requests/(\d+)/`)
 	matches := re.FindAllStringSubmatch(pullRequestURL, -1)
@@ -99,24 +154,61 @@ func ParseRepoInfo(pullRequestURL string) (string, string, string, error) {
 	return extractedGroups[1], extractedGroups[2], extractedGroups[3], nil
 }
 
-func (b *BitBucketClient) PostComment(pullRequestId string, comment Comment) ([]byte, error) {
+func (b *BitBucketClient) ApprovePR(pullRequestId string) error {
+	return b.approvePROperation(pullRequestId, "POST")
+}
+
+func (b *BitBucketClient) UnApprovePR(pullRequestId string) error {
+	return b.approvePROperation(pullRequestId, "DELETE")
+}
+
+func (b *BitBucketClient) approvePROperation(pullRequestId, method string)  error {
+	placeholderURL := b.formURL("repositories/%s/%s/pullrequests/%s/approve")
+	url := fmt.Sprintf(placeholderURL, b.RepoOwner, b.Repo, pullRequestId)
+
+	authenticatedReq, err := b.prepareAuthenticatedRequest(method, url, "", nil)
+	if err != nil {
+		return errors.Wrap(err, fmt.Sprintf("could not prepare authenticated request to: %s", url))
+	}
+
+	response, err := b.client.Do(authenticatedReq)
+	defer response.Body.Close()
+
+	if err != nil {
+		msg := "approve"
+		if method == "DELETE" {
+			msg = "unapprove"
+		}
+		return errors.Wrap(err, fmt.Sprintf("could not %s PR", msg))
+	}
+
+	if response.StatusCode == 404 && method == "DELETE" {
+		return notApprovedYet
+	}
+
+	if response.StatusCode == 409 && method == "POST" {
+		return alreadyApproved
+	}
+
+	contents, err := ioutil.ReadAll(response.Body)
+
+	if response.StatusCode != 200 {
+		return errors.New(fmt.Sprintf("expected status code of 200 when approving PR, got:%s", string(contents)))
+	}
+
+	return nil
+}
+
+func (b *BitBucketClient) PostGlobalComment(pullRequestId, text string) ([]byte, error) {
+	return b.postCommentFromMap(pullRequestId, buildGlobalMsgFormat(text))
+}
+
+func (b *BitBucketClient) postCommentFromMap(pullRequestId string, comment map[string]interface{}) ([]byte, error) {
 	placeholderURL := b.formURL("repositories/%s/%s/pullrequests/%s/comments")
 	url := fmt.Sprintf(placeholderURL, b.RepoOwner, b.Repo, pullRequestId)
-	bade := map[string]interface{}{
-		"content": map[string]string{
-			"raw": comment.Text,
-		},
-		"inline": map[string]interface{}{
-			"to":   comment.Line,
-			"path": comment.File,
-		},
-	}
-	encoded, err := json.MarshalIndent(bade, "", "  ")
+	encoded, err := json.MarshalIndent(comment, "", "  ")
 	if err != nil {
 		return nil, errors.Wrap(err, "could not serialize comment body")
-	}
-	if os.Getenv("DEBUG") != "" {
-		fmt.Println("posting|", string(encoded), "|")
 	}
 	contentType := "application/json"
 	authenticatedReq, err := b.prepareAuthenticatedRequest("POST", url, contentType, bytes.NewReader(encoded))
@@ -139,6 +231,10 @@ func (b *BitBucketClient) PostComment(pullRequestId string, comment Comment) ([]
 	return contents, err
 }
 
+func (b *BitBucketClient) PostComment(pullRequestId string, comment Comment) ([]byte, error) {
+	return b.postCommentFromMap(pullRequestId, comment.toMapFields())
+}
+
 func (b *BitBucketClient) prepareAuthenticatedRequest(method, url string, contentType string, body io.Reader) (*http.Request, error) {
 	request, err := http.NewRequest(method, url, body)
 
@@ -159,6 +255,35 @@ func (b *BitBucketClient) prepareAuthenticatedRequest(method, url string, conten
 	return request, nil
 }
 
+func (b *BitBucketClient) RequestChanges(pullRequestId string) error {
+	partialUrl := fmt.Sprintf("repositories/%s/%s/pullrequests/%s/request-changes", b.RepoOwner, b.Repo, pullRequestId)
+	reqUrl := b.formURL(partialUrl)
+	request, err := b.prepareAuthenticatedRequest("POST", reqUrl, "", nil)
+
+	if err != nil {
+		return errors.Wrap(err, "failed to create request")
+	}
+
+	resp, err := b.client.Do(request)
+	if err != nil {
+		return errors.Wrap(err, "failed to perform request")
+	}
+
+	if resp.StatusCode != 200 {
+		if resp.StatusCode == 409 {
+			return alreadyRequestedCodeChanges
+		}
+		actBody, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return errors.Wrap(err, "failed to parse error body")
+		}
+		resp.Body.Close()
+		return fmt.Errorf("unexpected status code:%d issue:%s", resp.StatusCode, string(actBody))
+	}
+
+	return nil
+}
+
 func (b *BitBucketClient) DeleteCodeReviewRequestChanges(pullRequestId string) error {
 	partialUrl := fmt.Sprintf("repositories/%s/%s/pullrequests/%s/request-changes", b.RepoOwner, b.Repo, pullRequestId)
 	reqUrl := b.formURL(partialUrl)
@@ -171,6 +296,9 @@ func (b *BitBucketClient) DeleteCodeReviewRequestChanges(pullRequestId string) e
 		return errors.Wrap(err, "failed to perform request")
 	}
 	if resp.StatusCode != 204 {
+		if resp.StatusCode == 404 {
+			return noCodeChangesRequested
+		}
 		actBody, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			return errors.Wrap(err, "failed to parse error body")
