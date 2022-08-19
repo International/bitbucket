@@ -119,7 +119,7 @@ func (b *BitBucketClient) PostComment(pullRequestId string, comment Comment) ([]
 		fmt.Println("posting|", string(encoded), "|")
 	}
 	contentType := "application/json"
-	authenticatedReq, err := b.prepareAuthenticatedRequest("POST", url, &contentType, bytes.NewReader(encoded))
+	authenticatedReq, err := b.prepareAuthenticatedRequest("POST", url, contentType, bytes.NewReader(encoded))
 	if err != nil {
 		return nil, errors.Wrap(err, fmt.Sprintf("could not prepare authenticated request to: %s", url))
 	}
@@ -139,7 +139,7 @@ func (b *BitBucketClient) PostComment(pullRequestId string, comment Comment) ([]
 	return contents, err
 }
 
-func (b *BitBucketClient) prepareAuthenticatedRequest(method, url string, contentType *string, body io.Reader) (*http.Request, error) {
+func (b *BitBucketClient) prepareAuthenticatedRequest(method, url string, contentType string, body io.Reader) (*http.Request, error) {
 	request, err := http.NewRequest(method, url, body)
 
 	if err != nil {
@@ -150,12 +150,35 @@ func (b *BitBucketClient) prepareAuthenticatedRequest(method, url string, conten
 	credentials = base64.StdEncoding.EncodeToString([]byte(credentials))
 
 	request.Header.Set("Authorization", fmt.Sprintf("Basic %s", credentials))
+	request.Header.Set("Accept", "application/json")
 
-	if contentType != nil {
-		request.Header.Set("Content-Type", *contentType)
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
 	}
 
 	return request, nil
+}
+
+func (b *BitBucketClient) DeleteCodeReviewRequestChanges(pullRequestId string) error {
+	partialUrl := fmt.Sprintf("repositories/%s/%s/pullrequests/%s/request-changes", b.RepoOwner, b.Repo, pullRequestId)
+	reqUrl := b.formURL(partialUrl)
+	request, err := b.prepareAuthenticatedRequest("DELETE", reqUrl, "", nil)
+	if err != nil {
+		return errors.Wrap(err, "failed to create request")
+	}
+	resp, err := b.client.Do(request)
+	if err != nil {
+		return errors.Wrap(err, "failed to perform request")
+	}
+	if resp.StatusCode != 204 {
+		actBody, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return errors.Wrap(err, "failed to parse error body")
+		}
+		resp.Body.Close()
+		return fmt.Errorf("unexpected status code:%d issue:%s", resp.StatusCode, string(actBody))
+	}
+	return nil
 }
 
 func (b *BitBucketClient) CommitDiff(spec, target string) ([]byte, error) {
@@ -225,7 +248,7 @@ func (b *BitBucketClient) PullRequestInfo(pullRequestId string) (PullRequestDesc
 
 func (b *BitBucketClient) performGet(url string) ([]byte, error) {
 
-	request, err := b.prepareAuthenticatedRequest("GET", url, nil, nil)
+	request, err := b.prepareAuthenticatedRequest("GET", url, "", nil)
 
 	if err != nil {
 		return nil, errors.Wrap(err, fmt.Sprintf("could not prepare an authenticated request to %s", url))
