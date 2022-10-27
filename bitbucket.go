@@ -158,8 +158,48 @@ func (b *BitBucketClient) ApprovePR(pullRequestId string) error {
 	return b.approvePROperation(pullRequestId, "POST")
 }
 
+func (b *BitBucketClient) CreatePullRequest(title, sourceBranch, targetBranch string) error {
+	return b.createPullRequest(title, sourceBranch, targetBranch)
+}
+
 func (b *BitBucketClient) UnApprovePR(pullRequestId string) error {
 	return b.approvePROperation(pullRequestId, "DELETE")
+}
+
+func (b *BitBucketClient) createPullRequest(title, sourceBranch, targetBranch string) error {
+	placeholderURL := b.formURL("repositories/%s/%s/pullrequests")
+	url := fmt.Sprintf(placeholderURL, b.RepoOwner, b.Repo)
+
+	prBody := map[string]interface{}{
+		"title": title,
+		"source": map[string]interface{}{
+			"branch": map[string]string{
+				"name": sourceBranch,
+			},
+		},
+		"destination": map[string]interface{}{
+			"branch": map[string]string{
+				"name": targetBranch,
+			},
+		},
+	}
+	encoded, err := json.Marshal(prBody)
+	if err != nil {
+		return err
+	}
+	authenticatedReq, err := b.prepareAuthenticatedRequest("POST", url, "application/json", bytes.NewReader(encoded))
+	if err != nil {
+		return errors.Wrap(err, fmt.Sprintf("could not prepare authenticated request to: %s", url))
+	}
+	response, err := b.client.Do(authenticatedReq)
+	defer response.Body.Close()
+	if err != nil {
+		return errors.Wrap(err, fmt.Sprintf("failure performing request to %s", url))
+	}
+	if response.StatusCode != 201 {
+		return errors.Errorf("expected 201 received %d", response.StatusCode)
+	}
+	return nil
 }
 
 func (b *BitBucketClient) approvePROperation(pullRequestId, method string)  error {
