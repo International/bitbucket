@@ -27,6 +27,10 @@ type queuedDownload struct {
 	RelevantForPR bool
 }
 
+type CreatedPullRequest struct {
+	URL string
+}
+
 func DefaultHttpClient() *http.Client {
 	cli := &http.Client{Timeout: 30 * time.Second}
 	return cli
@@ -158,7 +162,7 @@ func (b *BitBucketClient) ApprovePR(pullRequestId string) error {
 	return b.approvePROperation(pullRequestId, "POST")
 }
 
-func (b *BitBucketClient) CreatePullRequest(title, sourceBranch, targetBranch string) error {
+func (b *BitBucketClient) CreatePullRequest(title, sourceBranch, targetBranch string) (*CreatedPullRequest, error) {
 	return b.createPullRequest(title, sourceBranch, targetBranch)
 }
 
@@ -166,7 +170,7 @@ func (b *BitBucketClient) UnApprovePR(pullRequestId string) error {
 	return b.approvePROperation(pullRequestId, "DELETE")
 }
 
-func (b *BitBucketClient) createPullRequest(title, sourceBranch, targetBranch string) error {
+func (b *BitBucketClient) createPullRequest(title, sourceBranch, targetBranch string) (*CreatedPullRequest,error) {
 	placeholderURL := b.formURL("repositories/%s/%s/pullrequests")
 	url := fmt.Sprintf(placeholderURL, b.RepoOwner, b.Repo)
 
@@ -185,21 +189,29 @@ func (b *BitBucketClient) createPullRequest(title, sourceBranch, targetBranch st
 	}
 	encoded, err := json.Marshal(prBody)
 	if err != nil {
-		return err
+		return nil, errors.Wrap(err, "could not serialize body")
 	}
 	authenticatedReq, err := b.prepareAuthenticatedRequest("POST", url, "application/json", bytes.NewReader(encoded))
 	if err != nil {
-		return errors.Wrap(err, fmt.Sprintf("could not prepare authenticated request to: %s", url))
+		return nil, errors.Wrap(err, fmt.Sprintf("could not prepare authenticated request to: %s", url))
 	}
 	response, err := b.client.Do(authenticatedReq)
 	defer response.Body.Close()
 	if err != nil {
-		return errors.Wrap(err, fmt.Sprintf("failure performing request to %s", url))
+		return nil, errors.Wrap(err, fmt.Sprintf("failure performing request to %s", url))
 	}
 	if response.StatusCode != 201 {
-		return errors.Errorf("expected 201 received %d", response.StatusCode)
+		return nil, errors.Errorf("expected 201 received %d", response.StatusCode)
 	}
-	return nil
+	contents, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not read response body")
+	}
+	des, err := deserializePullRequest(contents)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not deserialize pull request")
+	}
+	return &CreatedPullRequest{URL: des}, nil
 }
 
 func (b *BitBucketClient) approvePROperation(pullRequestId, method string)  error {
@@ -453,4 +465,23 @@ func (b *BitBucketClient) PullRequestDiff(pullRequestId string) ([]diff.Modified
 		return nil, errors.Wrap(err, "could not parse diff")
 	}
 	return modifiedFiles, nil
+}
+
+func deserializePullRequest(input []byte) (string, error) {
+	deserializeInto := make(map[string]interface{})
+	err := json.Unmarshal(input, &deserializeInto)
+	if err != nil {
+		return "", err
+	}
+	if actLinks, ok := deserializeInto["links"].(map[string]interface{}); ok {
+		if htmlSection, ok := actLinks["html"].(map[string]interface{}); ok {
+			if actStr, ok := htmlSection["href"].(string); ok {
+				return actStr, nil
+			}
+			return "", fmt.Errorf("no href section found")
+		}
+		return "", fmt.Errorf("no html section found")
+	}
+	return "", fmt.Errorf("no links section found")
+
 }
